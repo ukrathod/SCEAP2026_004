@@ -105,18 +105,37 @@ export const calculateSegmentVoltageDrop = (
 /**
  * Discover all paths from equipment/loads back to transformer
  * Uses breadth-first search to find the shortest path
+ * ENHANCED: Automatically detects transformer if not explicitly named with 'TRF'
  */
 export const discoverPathsToTransformer = (cables: CableSegment[]): CablePath[] => {
   const paths: CablePath[] = [];
-  const transformerBuses = new Set(
+  
+  // FIRST: Try to find explicit transformer buses (containing 'TRF')
+  let transformerBuses = new Set(
     cables
       .filter(c => c.toBus.toUpperCase().includes('TRF'))
       .map(c => c.toBus)
   );
 
+  // SECOND: If no explicit transformer found, find the top-level bus(es)
+  // Top-level bus = a toBus that is NOT a fromBus in any other cable
+  // This bus is the "root" or transformer of the hierarchy
   if (transformerBuses.size === 0) {
-    console.warn('No transformer found in cable data');
-    return [];
+    const toBuses = new Set(cables.map(c => c.toBus));
+    const fromBuses = new Set(cables.map(c => c.fromBus));
+    
+    // Find buses that are destinations but never sources
+    const topLevelBuses = Array.from(toBuses).filter(bus => !fromBuses.has(bus));
+    
+    if (topLevelBuses.length > 0) {
+      console.warn(`No 'TRF' named transformer found. Auto-detected top-level bus(es): ${topLevelBuses.join(', ')}`);
+      transformerBuses = new Set(topLevelBuses);
+    } else {
+      console.error('CRITICAL: No transformer or top-level bus found in cable data');
+      console.error('All cables appear to form a cycle with no clear root/source');
+      console.error('Please ensure your data has a hierarchy: loads → panels → transformer');
+      return [];
+    }
   }
 
   // Find all unique "FromBus" (equipment/loads)
@@ -232,7 +251,34 @@ const tracePathToTransformer = (
  * Analyze all paths and generate summary report
  */
 export const analyzeAllPaths = (cables: CableSegment[]): PathAnalysisResult => {
+  if (!cables || cables.length === 0) {
+    console.error('ERROR: No cable data provided to analyzeAllPaths');
+    return {
+      totalPaths: 0,
+      validPaths: 0,
+      invalidPaths: 0,
+      paths: [],
+      averageVoltageDrop: 0,
+      criticalPaths: []
+    };
+  }
+
   const paths = discoverPathsToTransformer(cables);
+
+  // VALIDATION: Warn if no paths discovered despite having cable data
+  if (paths.length === 0 && cables.length > 0) {
+    console.error('⚠️ CRITICAL DATA INTEGRITY WARNING ⚠️');
+    console.error(`System loaded ${cables.length} cables but discovered 0 paths`);
+    console.error('REASONS:');
+    console.error('1. No cables found connecting to a top-level bus (transformer)');
+    console.error('2. All cables form a cycle with no root/source');
+    console.error('3. Data structure does not match expected electrical hierarchy');
+    console.error('\nEXPECTED FORMAT:');
+    console.error('  - Each row = one cable connecting FROM a load TO a panel/source');
+    console.error('  - Loads → Panels → Transformer (hierarchical structure)');
+    console.error('  - At least one cable must have a toBus that is NEVER a fromBus');
+    console.error('  - Example: from_bus="MOTOR-1", to_bus="MCC-PANEL" (MCC is parent)');
+  }
 
   const validPaths = paths.filter(p => p.isValid);
   const invalidPaths = paths.filter(p => !p.isValid);
