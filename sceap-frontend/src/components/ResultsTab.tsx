@@ -5,61 +5,51 @@ import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import { usePathContext } from '../context/PathContext';
 import { CableSegment } from '../utils/pathDiscoveryService';
+import CableSizingEngine, { CableSizingInput } from '../utils/CableSizingEngine';
+import { LoadTypeSpecs } from '../utils/CableEngineeringData';
 
+// Result type for display - maps engine output to UI fields
 interface CableSizingResult {
+  // Original cable info
   serialNo: number;
   cableNumber: string;
   feederDescription: string;
   fromBus: string;
   toBus: string;
-  voltage: number;
   loadKW: number;
+  voltage: number;
   length: number;
   powerFactor: number;
   efficiency: number;
   deratingFactor: number;
+  conductorMaterial: 'Cu' | 'Al';
+  numberOfCores: string;
+  
+  // Calculated values
   fullLoadCurrent: number;
+  startingCurrent?: number;
   deratedCurrent: number;
   cableResistance: number;
   voltageDrop: number;
   voltageDropPercent: number;
+  
+  // Cable size calculations
   sizeByCurrent: number;
   sizeByVoltageDrop: number;
   sizeByShortCircuit: number;
   suitableCableSize: number;
-  shortCircuitCurrent: number;
-  breakerSize: string;
-  status: 'valid' | 'invalid';
-  // NEW FIELDS FOR PROFESSIONAL CABLE SIZING
-  numberOfCores: number;
-  conductorMaterial: 'Cu' | 'Al';
-  numberOfRuns: number;
   cableSizeSQMM: number;
+  numberOfRuns: number;
+  
+  // Results
   cableDesignation: string;
+  shortCircuitCurrent?: number;
+  breakerSize?: string;
+  status: 'APPROVED' | 'WARNING' | 'FAILED';
   anomalies?: string[];
+  warnings?: string[];
   isAnomaly?: boolean;
 }
-
-// Standard cable sizing table (mm² → max current capacity at 70°C)
-const CABLE_AMPACITY: Record<number, number> = {
-  1: 13,
-  1.5: 18,
-  2.5: 25,
-  4: 33,
-  6: 43,
-  10: 61,
-  16: 80,
-  25: 110,
-  35: 150,
-  50: 190,
-  70: 245,
-  95: 310,
-  120: 360,
-  150: 415,
-  185: 475,
-  240: 550,
-  300: 630,
-};
 
 // Simple data validation to flag suspicious inputs or results
 const detectAnomalies = (
@@ -97,174 +87,117 @@ const detectAnomalies = (
   return issues;
 };
 
-// Copper cable resistance at 70°C (Ω/km)
-const CABLE_RESISTANCE: Record<number, number> = {
-  1: 18.51,
-  1.5: 12.1,
-  2.5: 7.41,
-  4: 4.61,
-  6: 3.08,
-  10: 1.83,
-  16: 1.15,
-  25: 0.727,
-  35: 0.524,
-  50: 0.387,
-  70: 0.268,
-  95: 0.193,
-  120: 0.153,
-  150: 0.124,
-  185: 0.099,
-  240: 0.0754,
-  300: 0.0601,
-};
-
 /**
- * ENHANCED CABLE SIZING WITH RUNS CALCULATION
- * Implements IEC 60364 standards for professional cable designation
- * Format: Number_of_Runs X Number_of_Cores C X Cable_Size SQMM (Material)
+ * INDUSTRIAL-GRADE CABLE SIZING
+ * Uses CableSizingEngine with IEC 60287/60364 compliance
+ * Handles all load types with proper environmental derating
  */
 const calculateCableSizing = (cable: CableSegment): CableSizingResult => {
-  const PF = 0.85; // Power factor
-  const EFFICIENCY = 0.95;
-  const SQRT3 = 1.732;
-  const SHORT_CIRCUIT = 30000; // kA - assumed
-  
-  // Get number of cores and material from cable segment
-  const numberOfCores = cable.numberOfCores || 4; // Default 4C for 3-phase
-  const conductorMaterial = cable.conductorMaterial || 'Cu'; // Default Copper
+  try {
+    // Prepare input for industrial engine
+    const loadType = (cable.loadType || 'Motor') as keyof typeof LoadTypeSpecs;
+    const specs = LoadTypeSpecs[loadType] || LoadTypeSpecs.Motor;
+    
+    const engineInput: CableSizingInput = {
+      loadType,
+      ratedPowerKW: cable.loadKW || 0.1,
+      voltage: cable.voltage,
+      phase: cable.phase || '3Ø',
+      frequency: 50,
+      efficiency: cable.efficiency || specs.typicalEfficiency || 0.95,
+      powerFactor: cable.powerFactor || specs.typicalPowerFactor || 0.85,
+      startingMethod: (cable.startingMethod || (specs as any).typicalStartingMethod || 'DOL') as any,
+      conductorMaterial: cable.conductorMaterial || 'Cu',
+      insulation: cable.insulation || 'XLPE',
+      numberOfCores: (typeof cable.numberOfCores === 'string' ? cable.numberOfCores : '3C+E') as any,
+      installationMethod: cable.installationMethod || 'Air - Ladder tray (touching)',
+      cableSpacing: (cable.cableSpacing || 'touching') as any,
+      cableLength: cable.length || 0,
+      ambientTemp: cable.ambientTemp || 40,
+      soilThermalResistivity: cable.soilThermalResistivity || 1.2,
+      depthOfLaying: cable.depthOfLaying || 60,
+      groupedLoadedCircuits: cable.groupedLoadedCircuits || 1,
+      protectionClearingTime: 0.1,
+      maxShortCircuitCurrent: cable.maxShortCircuitCurrent || 15
+    };
 
-  // 1. Calculate Full Load Current: I = (P × 1000) / (√3 × V × PF × Eff)
-  const FLC = (cable.loadKW * 1000) / (SQRT3 * cable.voltage * PF * EFFICIENCY);
+    // Run industrial sizing engine
+    const engine = new CableSizingEngine();
+    const engineResult = engine.sizeCable(engineInput);
 
-  // 2. Apply derating factor
-  const deratedCurrent = FLC / cable.deratingFactor;
+    // Map result to display format
+    const result: CableSizingResult = {
+      serialNo: cable.serialNo,
+      cableNumber: cable.cableNumber,
+      feederDescription: cable.feederDescription,
+      fromBus: cable.fromBus,
+      toBus: cable.toBus,
+      voltage: cable.voltage,
+      length: cable.length || 0,
+      loadKW: cable.loadKW || 0,
+      powerFactor: engineInput.powerFactor,
+      efficiency: engineInput.efficiency,
+      deratingFactor: engineResult.deratingFactors.total,
+      conductorMaterial: engineInput.conductorMaterial as 'Cu' | 'Al',
+      numberOfCores: engineInput.numberOfCores as string,
+      fullLoadCurrent: engineResult.fullLoadCurrent,
+      startingCurrent: engineResult.startingCurrent || undefined,
+      deratedCurrent: engineResult.fullLoadCurrent * engineResult.deratingFactors.total,
+      cableResistance: 0.193,
+      voltageDrop: engineResult.voltageDropRunning_voltage || 0,
+      voltageDropPercent: engineResult.voltageDropRunning_percent || 0,
+      sizeByCurrent: engineResult.sizeByAmpacity || 0,
+      sizeByVoltageDrop: engineResult.sizeByVoltageDropRunning || 0,
+      sizeByShortCircuit: engineResult.sizeByShortCircuit || 0,
+      suitableCableSize: engineResult.selectedSize,
+      cableSizeSQMM: engineResult.selectedSize,
+      numberOfRuns: engineResult.numberOfRuns,
+      cableDesignation: `${engineResult.numberOfRuns}×${engineResult.sizePerRun}mm² (${engineInput.conductorMaterial} ${engineInput.insulation})`,
+      shortCircuitCurrent: (engineResult.maxAllowableShortCircuit || 0) * 1000,
+      breakerSize: `${Math.ceil(engineResult.fullLoadCurrent / 10) * 10}A`,
+      status: engineResult.status,
+      warnings: engineResult.warnings,
+      anomalies: engineResult.warnings
+    };
 
-  // 3. Size by current requirement (with 1.25 safety factor)
-  const requiredCurrent = deratedCurrent * 1.25;
-  let sizeByCurrent = 1;
-  for (const [size, capacity] of Object.entries(CABLE_AMPACITY)) {
-    if (capacity >= requiredCurrent) {
-      sizeByCurrent = Number(size);
-      break;
-    }
+    const anomalies = detectAnomalies(cable, result);
+    result.anomalies = [...(result.warnings || []), ...anomalies];
+    result.isAnomaly = result.anomalies.length > 0;
+
+    return result;
+  } catch (error) {
+    // Fallback for invalid data
+    console.warn('Cable sizing error:', error);
+    return {
+      serialNo: cable.serialNo,
+      cableNumber: cable.cableNumber,
+      feederDescription: cable.feederDescription,
+      fromBus: cable.fromBus,
+      toBus: cable.toBus,
+      voltage: cable.voltage,
+      length: cable.length || 0,
+      loadKW: cable.loadKW || 0,
+      powerFactor: 0.85,
+      efficiency: 0.95,
+      deratingFactor: 0.87,
+      conductorMaterial: cable.conductorMaterial || 'Cu',
+      numberOfCores: '3C+E',
+      fullLoadCurrent: 0,
+      deratedCurrent: 0,
+      cableResistance: 0,
+      voltageDrop: 0,
+      voltageDropPercent: 0,
+      sizeByCurrent: 0,
+      sizeByVoltageDrop: 0,
+      sizeByShortCircuit: 0,
+      suitableCableSize: 0,
+      cableSizeSQMM: 0,
+      numberOfRuns: 1,
+      cableDesignation: 'ERROR',
+      status: 'FAILED',
+      anomalies: ['Cable sizing calculation failed']
+    };
   }
-
-  // 4. Calculate voltage drop
-  const cableResistance = CABLE_RESISTANCE[sizeByCurrent as number] || 0.727;
-  const vdrop =
-    (SQRT3 * deratedCurrent * cableResistance * cable.length) / 1000;
-  const vdropPercent = (vdrop / cable.voltage) * 100;
-
-  // 5. Size by voltage drop (5% limit)
-  let sizeByVoltageDrop = sizeByCurrent;
-  for (const size of [25, 35, 50, 70, 95, 120, 150, 185, 240, 300]) {
-    const R = CABLE_RESISTANCE[size] || 0.727;
-    const vd = (SQRT3 * deratedCurrent * R * cable.length) / 1000;
-    const vdp = (vd / cable.voltage) * 100;
-    if (vdp <= 5) {
-      sizeByVoltageDrop = size;
-      break;
-    }
-  }
-
-  // 6. Size by short circuit (assume worst case)
-  const sizeByShortCircuit = 25; // Conservative estimate
-
-  // 7. Select suitable size (maximum of all three methods)
-  const suitableSize = Math.max(
-    sizeByCurrent,
-    sizeByVoltageDrop,
-    sizeByShortCircuit
-  );
-
-  // ========== NEW: CALCULATE OPTIMAL NUMBER OF RUNS ==========
-  // Algorithm: Find best number of runs that keeps cable size practical
-  // Practical range: 16-240 SQMM (standard IEC sizes)
-  
-  let numberOfRuns = 1;
-  let finalCableSize = suitableSize;
-  
-  const MAX_SINGLE_CABLE_CAPACITY = 550; // 240 SQMM at 70°C = 550A (conservative)
-  
-  // Check if current exceeds single cable capacity
-  if (requiredCurrent > MAX_SINGLE_CABLE_CAPACITY) {
-    numberOfRuns = Math.ceil(requiredCurrent / MAX_SINGLE_CABLE_CAPACITY);
-  } else {
-    // For smaller currents, keep 1 run if reasonable
-    numberOfRuns = 1;
-  }
-  
-  // Calculate current per run
-  const currentPerRun = requiredCurrent / numberOfRuns;
-
-  // If there's effectively no load (zero or negligible current),
-  // avoid selecting unreasonably small conductor like 1 mm².
-  // Use the suitable size or a practical minimum (25 mm²) as floor.
-  if (!cable.loadKW || currentPerRun <= 1) {
-    finalCableSize = Math.max(suitableSize, 25);
-  } else {
-    // Find cable size for the per-run current
-    for (const [size, capacity] of Object.entries(CABLE_AMPACITY)) {
-      if (capacity >= currentPerRun) {
-        finalCableSize = Number(size);
-        break;
-      }
-    }
-  }
-  
-  // If size is still too large (>240), increase runs instead
-  if (finalCableSize > 240 && numberOfRuns < 10) {
-    numberOfRuns++;
-    const newCurrentPerRun = requiredCurrent / numberOfRuns;
-    if (!cable.loadKW || newCurrentPerRun <= 1) {
-      finalCableSize = Math.max(suitableSize, 25);
-    } else {
-      for (const [size, capacity] of Object.entries(CABLE_AMPACITY)) {
-        if (capacity >= newCurrentPerRun) {
-          finalCableSize = Number(size);
-          break;
-        }
-      }
-    }
-  }
-  
-  // Generate cable designation: e.g., "2 X 3 C X 120 SQMM (Cu)"
-  const cableDesignation = `${numberOfRuns} X ${numberOfCores} C X ${finalCableSize} SQMM (${conductorMaterial})`;
-
-  // 8. Determine breaker size
-  const breakerSize = `${Math.ceil(deratedCurrent / 10) * 10}A`;
-
-  return {
-    serialNo: cable.serialNo,
-    cableNumber: cable.cableNumber,
-    feederDescription: cable.feederDescription,
-    fromBus: cable.fromBus,
-    toBus: cable.toBus,
-    voltage: cable.voltage,
-    loadKW: cable.loadKW,
-    length: cable.length,
-    powerFactor: PF,
-    efficiency: EFFICIENCY,
-    deratingFactor: cable.deratingFactor,
-    fullLoadCurrent: FLC,
-    deratedCurrent: deratedCurrent,
-    cableResistance: cableResistance,
-    voltageDrop: vdrop,
-    voltageDropPercent: vdropPercent,
-    sizeByCurrent: sizeByCurrent,
-    sizeByVoltageDrop: sizeByVoltageDrop,
-    sizeByShortCircuit: sizeByShortCircuit,
-    suitableCableSize: suitableSize,
-    shortCircuitCurrent: SHORT_CIRCUIT,
-    breakerSize: breakerSize,
-    // NEW FIELDS
-    numberOfCores: numberOfCores,
-    conductorMaterial: conductorMaterial,
-    numberOfRuns: numberOfRuns,
-    cableSizeSQMM: finalCableSize,
-    cableDesignation: cableDesignation,
-    status: vdropPercent <= 5 ? 'valid' : 'invalid',
-  };
 };
 
 const ResultsTab = () => {
@@ -382,7 +315,7 @@ const ResultsTab = () => {
       'Number of Runs': r.numberOfRuns,
       'Final Cable Size (mm²)': r.cableSizeSQMM,
       'Cable Designation': r.cableDesignation,
-      'Isc (kA)': (r.shortCircuitCurrent / 1000).toFixed(1),
+      'Isc (kA)': (r.shortCircuitCurrent || 0 / 1000).toFixed(1),
       'Breaker': r.breakerSize,
       'Status': r.status.toUpperCase(),
     }));
@@ -474,8 +407,8 @@ const ResultsTab = () => {
     }
   };
 
-  const validResults = results.filter((r) => r.status === 'valid').length;
-  const invalidResults = results.filter((r) => r.status === 'invalid').length;
+  const validResults = results.filter((r) => r.status === 'APPROVED').length;
+  const invalidResults = results.filter((r) => r.status === 'FAILED').length;
   const totalLoad = results.reduce((sum, r) => sum + r.loadKW, 0);
 
   return (
@@ -690,13 +623,17 @@ const ResultsTab = () => {
                       <td className="px-3 py-2 text-slate-300">{result.breakerSize}</td>
                     )}
                   <td className="px-3 py-2 text-center align-middle">
-                    {result.status === 'valid' ? (
+                    {result.status === 'APPROVED' ? (
                       <span className="inline-flex items-center gap-2 px-2 py-1 rounded bg-green-500/20 text-green-300 text-xs font-medium">
-                        ✓ VALID
+                        ✓ APPROVED
+                      </span>
+                    ) : result.status === 'WARNING' ? (
+                      <span className="inline-flex items-center gap-2 px-2 py-1 rounded bg-yellow-500/20 text-yellow-300 text-xs font-medium">
+                        ⚠ WARNING
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-2 px-2 py-1 rounded bg-red-500/20 text-red-300 text-xs font-medium">
-                        ✗ INVALID
+                        ✗ FAILED
                       </span>
                     )}
                   </td>

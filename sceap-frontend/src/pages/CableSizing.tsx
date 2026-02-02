@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { PageHeader } from '../components/Dashboard';
-import { Upload, Download, Calculator, Search, Edit, Eye, FileText } from 'lucide-react';
+import { Calculator, Search, FileText } from 'lucide-react';
 import SizingTab from '../components/SizingTab';
 import OptimizationTab from '../components/OptimizationTab';
 import ResultsTab from '../components/ResultsTab';

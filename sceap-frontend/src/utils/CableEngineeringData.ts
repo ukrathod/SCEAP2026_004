@@ -366,11 +366,16 @@ export const ShortCircuitData = {
   // Constant k for different materials and insulation
   // At 90°C initial, 250°C final temp (XLPE)
   material_constant: {
+    'Cu_XLPE_90C': 143,
+    'Cu_PVC_70C': 115,
+    'Al_XLPE_90C': 94,
+    'Al_PVC_70C': 76,
+    // Legacy keys for compatibility
     copper_XLPE_90C: 143,
     copper_PVC_70C: 115,
     aluminum_XLPE_90C: 94,
     aluminum_PVC_70C: 76
-  },
+  } as Record<string, number>,
 
   // Typical protection clearing times (seconds)
   protection_clearing_time: {

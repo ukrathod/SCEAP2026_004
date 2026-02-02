@@ -32,9 +32,21 @@ export interface CableSegment {
   resistance?: number;
   reactance?: number;
   // NEW FIELDS FOR PROFESSIONAL CABLE SIZING
-  numberOfCores?: number; // 1C, 2C, 3C, 4C, 5C
+  numberOfCores?: '1C' | '2C' | '3C' | '3C+E' | '4C'; // Conductor cores
   conductorMaterial?: 'Cu' | 'Al'; // Copper or Aluminum
-  systemPhase?: '1Ø' | '3Ø'; // Single or Three Phase
+  phase?: '1Ø' | '3Ø'; // Single or Three Phase
+  loadType?: 'Motor' | 'Heater' | 'Transformer' | 'Feeder' | 'Pump' | 'Fan' | 'Compressor';
+  efficiency?: number; // 0.0-1.0, for motors typically 0.85-0.96
+  powerFactor?: number; // 0.7-1.0, for motors typically 0.75-0.92
+  startingMethod?: 'DOL' | 'StarDelta' | 'SoftStarter' | 'VFD'; // Motor starting method
+  insulation?: 'XLPE' | 'PVC'; // Cable insulation type
+  installationMethod?: string; // e.g., 'Air - Ladder tray (touching)'
+  cableSpacing?: 'touching' | 'spaced_400mm' | 'spaced_600mm';
+  ambientTemp?: number; // °C
+  soilThermalResistivity?: number; // K·m/W for buried cables
+  depthOfLaying?: number; // cm for buried cables
+  groupedLoadedCircuits?: number; // Number of other loaded circuits nearby
+  maxShortCircuitCurrent?: number; // kA at installation point
 }
 
 export interface PathAnalysisResult {
@@ -53,25 +65,46 @@ export interface PathAnalysisResult {
 export const normalizeFeeders = (rawFeeders: any[]): CableSegment[] => {
   return rawFeeders
     .filter((f: any) => f['From Bus'] || f['fromBus'] || f['From bus'])
-    .map((feeder: any) => ({
-      serialNo: feeder['Serial No'] || feeder['serialNo'] || 0,
-      cableNumber: feeder['Cable Number'] || feeder['cableNumber'] || '',
-      feederDescription: feeder['Feeder Description'] || feeder['feederDescription'] || feeder['Description'] || '',
-      fromBus: feeder['From Bus'] || feeder['fromBus'] || '',
-      toBus: feeder['To Bus'] || feeder['toBus'] || '',
-      voltage: Number(feeder['Voltage (V)'] || feeder['voltage'] || 415),
-      loadKW: Number(feeder['Load KW'] || feeder['loadKW'] || 0),
-      length: Number(feeder['Length (m)'] || feeder['length'] || 0),
-      deratingFactor: Number(feeder['Derating Factor'] || feeder['deratingFactor'] || 0.87),
-      resistance: Number(feeder['Resistance'] || feeder['resistance'] || 0),
-      reactance: Number(feeder['Reactance'] || feeder['reactance'] || 0),
-      // NEW: Read number of cores from Excel if available, default to 4C for 3-phase
-      numberOfCores: Number(feeder['Number of Cores'] || feeder['numberOfCores'] || feeder['Core'] || 4),
-      // NEW: Read conductor material, default to Copper
-      conductorMaterial: (feeder['Material'] || feeder['conductorMaterial'] || 'Cu').toUpperCase() === 'AL' ? 'Al' : 'Cu',
-      // NEW: Determine system phase (default 3Ø for 415V systems)
-      systemPhase: feeder['Phase'] || feeder['systemPhase'] || (Number(feeder['Voltage (V)'] || 415) >= 400 ? '3Ø' : '1Ø')
-    }));
+    .map((feeder: any) => {
+      // Parse numberOfCores - can be string like "3C+E" or number like 4
+      let numberOfCores: '1C' | '2C' | '3C' | '3C+E' | '4C' | undefined;
+      const ncValue = feeder['Number of Cores'] || feeder['numberOfCores'] || feeder['Core'] || '3C+E';
+      if (typeof ncValue === 'string') {
+        numberOfCores = ncValue as any;
+      } else if (typeof ncValue === 'number') {
+        const coreMap: Record<number, '1C' | '2C' | '3C' | '3C+E' | '4C'> = { 1: '1C', 2: '2C', 3: '3C', 4: '3C+E' };
+        numberOfCores = coreMap[ncValue] || '3C+E';
+      }
+
+      return {
+        serialNo: feeder['Serial No'] || feeder['serialNo'] || 0,
+        cableNumber: feeder['Cable Number'] || feeder['cableNumber'] || '',
+        feederDescription: feeder['Feeder Description'] || feeder['feederDescription'] || feeder['Description'] || '',
+        fromBus: feeder['From Bus'] || feeder['fromBus'] || '',
+        toBus: feeder['To Bus'] || feeder['toBus'] || '',
+        voltage: Number(feeder['Voltage (V)'] || feeder['voltage'] || 415),
+        loadKW: Number(feeder['Load KW'] || feeder['loadKW'] || 0),
+        length: Number(feeder['Length (m)'] || feeder['length'] || 0),
+        deratingFactor: Number(feeder['Derating Factor'] || feeder['deratingFactor'] || 0.87),
+        resistance: Number(feeder['Resistance'] || feeder['resistance'] || 0),
+        reactance: Number(feeder['Reactance'] || feeder['reactance'] || 0),
+        numberOfCores,
+        conductorMaterial: (feeder['Material'] || feeder['conductorMaterial'] || 'Cu').toUpperCase() === 'AL' ? 'Al' : 'Cu',
+        phase: feeder['Phase'] || feeder['systemPhase'] || (Number(feeder['Voltage (V)'] || 415) >= 400 ? '3Ø' : '1Ø'),
+        loadType: (feeder['Load Type'] || feeder['loadType'] || 'Motor') as any,
+        efficiency: Number(feeder['Efficiency'] || feeder['efficiency'] || 0.92),
+        powerFactor: Number(feeder['Power Factor'] || feeder['powerFactor'] || 0.85),
+        startingMethod: (feeder['Starting Method'] || feeder['startingMethod'] || 'DOL') as any,
+        insulation: (feeder['Insulation'] || feeder['insulation'] || 'XLPE') as any,
+        installationMethod: feeder['Installation Method'] || feeder['installationMethod'] || 'Air - Ladder tray (touching)',
+        cableSpacing: (feeder['Cable Spacing'] || feeder['cableSpacing'] || 'touching') as any,
+        ambientTemp: Number(feeder['Ambient Temp (°C)'] || feeder['ambientTemp'] || 40),
+        soilThermalResistivity: Number(feeder['Soil Thermal Resistivity (K·m/W)'] || feeder['soilThermalResistivity'] || 1.2),
+        depthOfLaying: Number(feeder['Depth of Laying (cm)'] || feeder['depthOfLaying'] || 60),
+        groupedLoadedCircuits: Number(feeder['Grouped Loaded Circuits'] || feeder['groupedLoadedCircuits'] || 1),
+        maxShortCircuitCurrent: Number(feeder['Max SC Current (kA)'] || feeder['maxShortCircuitCurrent'] || 15)
+      };
+    });
 };
 
 /**

@@ -21,8 +21,7 @@ import {
   MotorStartingMultipliers,
   VoltageLimits,
   ShortCircuitData,
-  LoadTypeSpecs,
-  InstallationMethods
+  LoadTypeSpecs
 } from './CableEngineeringData';
 
 /**
@@ -182,7 +181,7 @@ export class CableSizingEngine {
       result.voltageDropRunning_voltage = vdRunning.voltage;
       result.sizeByVoltageDropRunning = this.sizeByVoltageDropConstraint(
         result.fullLoadCurrent,
-        VoltageLimits.running[this.input.loadType.toLowerCase()] || 0.05
+        (VoltageLimits.running as Record<string, number>)[this.input.loadType.toLowerCase()] || 0.05
       );
 
       // Step 5: Size by voltage drop (starting current - motors only)
@@ -191,7 +190,7 @@ export class CableSizingEngine {
         result.voltageDropStarting_percent = vdStarting.percent;
         result.voltageDropStarting_voltage = vdStarting.voltage;
         
-        const startingLimit = VoltageLimits.starting[this.input.startingMethod || 'DOL'] || 0.15;
+        const startingLimit = (VoltageLimits.starting as Record<string, number>)[this.input.startingMethod || 'DOL'] || 0.15;
         result.sizeByVoltageDropStarting = this.sizeByVoltageDropConstraint(
           result.startingCurrent,
           startingLimit
@@ -258,8 +257,8 @@ export class CableSizingEngine {
   }
 
   private calculateStartingCurrent(flc: number): number {
-    const method = this.input.startingMethod || LoadTypeSpecs[this.input.loadType].typicalStartingMethod || 'DOL';
-    const multiplier = MotorStartingMultipliers[method].typical;
+    const method = (this.input.startingMethod || (LoadTypeSpecs[this.input.loadType as keyof typeof LoadTypeSpecs] as any).typicalStartingMethod || 'DOL') as keyof typeof MotorStartingMultipliers;
+    const multiplier = (MotorStartingMultipliers[method] as any)?.typical || 5.5;
     return flc * multiplier;
   }
 
@@ -284,7 +283,7 @@ export class CableSizingEngine {
     const groupingTable = this.input.installationMethod.includes('Buried')
       ? DeratingTables.grouping_factor_buried
       : DeratingTables.grouping_factor_air;
-    factors.grouping = groupingTable[this.input.groupedLoadedCircuits] || 1.0;
+    factors.grouping = (groupingTable as Record<number, number>)[this.input.groupedLoadedCircuits] || 1.0;
 
     // Soil thermal resistivity (for buried cables only)
     if (this.input.installationMethod.includes('Buried') && this.input.soilThermalResistivity) {
@@ -457,7 +456,7 @@ export class CableSizingEngine {
 
     // Select ampacity table
     const key = `${material === 'Cu' ? 'copper' : 'aluminum'}_${cores}_${insulation}_${insulation === 'XLPE' ? '90C' : '70C'}_air`;
-    this.catalog = AmpacityTables[key] || AmpacityTables.copper_3core_XLPE_90C_air;
+    this.catalog = (AmpacityTables as Record<string, Record<number | string, number>>)[key] || AmpacityTables.copper_3core_XLPE_90C_air;
 
     // Select resistance table
     const resistanceKey = material === 'Cu' 
@@ -467,13 +466,13 @@ export class CableSizingEngine {
   }
 
   private getCableRating(size: number): number {
-    return this.catalog[size] || 640;
+    return (this.catalog as Record<string, number>)[String(size)] || 640;
   }
 
   private getReactance(size: number): number {
-    const spacing = this.input.cableSpacing || 'touching';
+    // const spacing = this.input.cableSpacing || 'touching';
     const reactanceTable = ConductorDatabase.reactance_single_core.air_touching; // Default
-    return reactanceTable[size] || 0.08;
+    return (reactanceTable as Record<number | string, number>)[size] || 0.08;
   }
 
   private interpolateFactor(table: Record<number | string, number>, value: number): number {
