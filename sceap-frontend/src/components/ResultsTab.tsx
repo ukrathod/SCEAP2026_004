@@ -608,11 +608,11 @@ const ResultsTab = () => {
                 <th className="px-2 py-2 text-center text-slate-200 font-bold" rowSpan={2}>Load(kW)</th>
                 <th className="px-2 py-2 text-center text-slate-200 font-bold" rowSpan={2}>L(m)</th>
                 
+                {/* DERATING FACTORS - BEFORE FLC */}
+                <th colSpan={5} className="px-2 py-2 text-center text-slate-900 font-bold bg-yellow-400 border-l border-slate-500">Derating Factors (IEC)</th>
+                
                 {/* Section 1: FLC Sizing */}
                 <th colSpan={3} className="px-2 py-2 text-center text-white font-bold border-l border-slate-500">1. FLC Sizing</th>
-                
-                {/* DERATING FACTORS - MOVED HERE FIRST */}
-                <th colSpan={5} className="px-2 py-2 text-center text-slate-900 font-bold bg-yellow-400 border-l border-slate-500">Derating Factors (IEC)</th>
                 
                 {/* Cable Sizes by Constraints */}
                 <th colSpan={3} className="px-2 py-2 text-center text-white font-bold bg-slate-600 border-l border-slate-500">Cable Sizes (mm²)</th>
@@ -634,17 +634,17 @@ const ResultsTab = () => {
               
               {/* Sub-headers */}
               <tr className="bg-slate-650 border-b border-slate-600">
-                {/* FLC sub-headers */}
-                <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">FLC(A)</th>
-                <th className="px-2 py-1 text-center text-slate-300 text-xs">Derated(A)</th>
-                <th className="px-2 py-1 text-center text-slate-300 text-xs">Size(mm²)</th>
-                
-                {/* Derating sub-headers */}
+                {/* Derating sub-headers - FIRST */}
                 <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-yellow-300 border-l border-slate-500">K_tot</th>
                 <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-yellow-300">K_t</th>
                 <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-yellow-300">K_g</th>
                 <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-yellow-300">K_s</th>
                 <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-yellow-300">K_d</th>
+                
+                {/* FLC sub-headers */}
+                <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">FLC(A)</th>
+                <th className="px-2 py-1 text-center text-slate-300 text-xs">Derated(A)</th>
+                <th className="px-2 py-1 text-center text-slate-300 text-xs">Size(mm²)</th>
                 
                 {/* Cable sizes sub-headers */}
                 <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">By Isc</th>
@@ -687,17 +687,17 @@ const ResultsTab = () => {
                   <td className="px-2 py-1 text-center text-slate-300">{result.loadKW.toFixed(2)}</td>
                   <td className="px-2 py-1 text-center text-slate-300">{result.length.toFixed(1)}</td>
                   
-                  {/* FLC Sizing */}
-                  <td className="px-2 py-1 text-center text-slate-300 border-l border-slate-600">{result.fullLoadCurrent.toFixed(1)}</td>
-                  <td className="px-2 py-1 text-center text-slate-300">{result.deratedCurrent.toFixed(1)}</td>
-                  <td className="px-2 py-1 text-center font-bold text-blue-400">{result.sizeByCurrent}</td>
-                  
-                  {/* Derating Factors - YELLOW HIGHLIGHT */}
+                  {/* Derating Factors - FIRST */}
                   <td className="px-2 py-1 text-center font-bold bg-yellow-500/20 border-l border-slate-600">{result.deratingFactor.toFixed(3)}</td>
                   <td className="px-2 py-1 text-center text-sm bg-yellow-500/20">{(result.deratingComponents?.K_temp || 1).toFixed(2)}</td>
                   <td className="px-2 py-1 text-center text-sm bg-yellow-500/20">{(result.deratingComponents?.K_group || 1).toFixed(2)}</td>
                   <td className="px-2 py-1 text-center text-sm bg-yellow-500/20">{(result.deratingComponents?.K_soil || 1).toFixed(2)}</td>
                   <td className="px-2 py-1 text-center text-sm bg-yellow-500/20">{(result.deratingComponents?.K_depth || 1).toFixed(2)}</td>
+                  
+                  {/* FLC Sizing */}
+                  <td className="px-2 py-1 text-center text-slate-300 border-l border-slate-600">{result.fullLoadCurrent.toFixed(1)}</td>
+                  <td className="px-2 py-1 text-center text-slate-300">{result.deratedCurrent.toFixed(1)}</td>
+                  <td className="px-2 py-1 text-center font-bold text-blue-400">{result.sizeByCurrent}</td>
                   
                   {/* Cable Sizes */}
                   <td className="px-2 py-1 text-center text-red-400 font-medium border-l border-slate-600">{result.sizeByShortCircuit}</td>
