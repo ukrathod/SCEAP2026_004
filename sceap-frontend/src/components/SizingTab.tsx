@@ -2,9 +2,10 @@ import { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
 import * as XLSX from 'xlsx';
 import { Upload, FileText, Calculator, Edit, Trash2, Loader2, Download, AlertCircle, CheckCircle } from 'lucide-react';
-import { normalizeFeeders, analyzeAllPaths } from '../utils/pathDiscoveryService';
+import { normalizeFeeders, analyzeAllPaths, autoDetectColumnMappings } from '../utils/pathDiscoveryService';
 import { usePathContext } from '../context/PathContext';
 import { generateDemoData } from '../utils/demoData';
+import ColumnMappingModal from './ColumnMappingModal';
 
 // Template generation function with SIMPLE, WORKING hierarchy
 const generateFeederTemplate = () => {
@@ -265,16 +266,23 @@ const LoadingOverlay = ({ message, progress }: { message: string; progress?: num
 };
 
 const SizingTab = () => {
-  const { setPathAnalysis: setContextPathAnalysis } = usePathContext();
+  const { setPathAnalysis: setContextPathAnalysis, setNormalizedFeeders: setContextNormalizedFeeders } = usePathContext();
   const [feederData, setFeederData] = useState<FeederData[]>([]);
   const [feederHeaders, setFeederHeaders] = useState<string[]>([]);
-  const [catalogueData, setCatalogueData] = useState<CableCatalogue[]>([]);
+  const [catalogueData, setCatalogueData] = useState<Record<string, CableCatalogue[]>>({});
+  const [activeCatalogueTab, setActiveCatalogueTab] = useState<string>('3C');
   const [isCalculating, setIsCalculating] = useState(false);
   const [editingRow, setEditingRow] = useState<number | null>(null);
   const [isLoadingFeeder, setIsLoadingFeeder] = useState(false);
   const [isLoadingCatalogue, setIsLoadingCatalogue] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
   const [pathAnalysis, setPathAnalysis] = useState<any>(null);
+  
+  // Column mapping modal state
+  const [showMappingModal, setShowMappingModal] = useState(false);
+  const [rawExcelHeaders, setRawExcelHeaders] = useState<string[]>([]);
+  const [rawExcelRows, setRawExcelRows] = useState<any[]>([]);
+  const [columnMappings, setColumnMappings] = useState<Record<string, string | null>>({});
 
   // Default cable catalogue
   const defaultCatalogue: CableCatalogue[] = [
@@ -312,7 +320,7 @@ const SizingTab = () => {
 
     reader.onprogress = (e) => {
       if (e.lengthComputable) {
-        const progress = Math.round((e.loaded / e.total) * 30); // First 30% for reading
+        const progress = Math.round((e.loaded / e.total) * 30);
         setLoadingMessage(`Reading file... ${progress}%`);
       }
     };
@@ -321,7 +329,6 @@ const SizingTab = () => {
       try {
         setLoadingMessage('Parsing Excel data...');
 
-        // Simulate parsing progress
         setTimeout(() => setLoadingMessage('Analyzing worksheet structure...'), 200);
         setTimeout(() => setLoadingMessage('Extracting column headers...'), 400);
         setTimeout(() => setLoadingMessage('Processing data rows...'), 600);
@@ -335,12 +342,9 @@ const SizingTab = () => {
             cellText: false
           });
 
-          setLoadingMessage('Validating data integrity...');
-
           const sheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[sheetName];
 
-          // Use sheet_to_json with header: 1 to get array of arrays
           const jsonData = XLSX.utils.sheet_to_json(worksheet, {
             header: 1,
             defval: '',
@@ -353,54 +357,36 @@ const SizingTab = () => {
             return;
           }
 
-          setLoadingMessage('Filtering and cleaning data...');
-
           // First row is headers
           const headers = jsonData[0] as string[];
           const rows = jsonData.slice(1) as any[][];
 
-          // Filter out completely empty rows
           const validRows = rows.filter(row =>
             row.some(cell => cell !== null && cell !== undefined && cell !== '')
           );
 
-          setLoadingMessage('Finalizing data structure...');
-
-          // Convert to feeder data format, preserving original column names
+          // Convert to feeder data format with original headers
           const feeders: FeederData[] = validRows.map((row, index) => {
             const feeder: any = { id: index + 1 };
             headers.forEach((header, colIndex) => {
-              // Preserve original header name
               const originalHeader = header || `Column_${colIndex + 1}`;
               feeder[originalHeader] = row[colIndex] || '';
             });
             return feeder as FeederData;
           });
 
-          setLoadingMessage('Data processing complete!');
+          // Auto-detect column mappings
+          const detectedMappings = autoDetectColumnMappings(headers);
 
-          // Analyze paths for cable sizing
-          setLoadingMessage('Discovering cable paths...');
-          try {
-            const normalizedFeeders = normalizeFeeders(feeders);
-            const analysis = analyzeAllPaths(normalizedFeeders);
-            setPathAnalysis(analysis);
-            setContextPathAnalysis(analysis); // Share with context for Optimization tab
-            setLoadingMessage('Path analysis complete!');
-          } catch (pathError) {
-            console.error('Path analysis error:', pathError);
-            setPathAnalysis(null);
-            setContextPathAnalysis(null);
-          }
+          // Store data and show mapping modal
+          setRawExcelHeaders(headers);
+          setRawExcelRows(feeders);
+          setColumnMappings(detectedMappings);
+          setShowMappingModal(true);
+          setIsLoadingFeeder(false);
 
-          setTimeout(() => {
-            setFeederHeaders(headers);
-            setFeederData(feeders);
-            setIsLoadingFeeder(false);
-
-            console.log(`Loaded ${feeders.length} feeders with ${headers.length} columns`);
-          }, 500);
-
+          console.log(`Loaded ${feeders.length} feeders with ${headers.length} columns`);
+          console.log('Auto-detected mappings:', detectedMappings);
         }, 800);
 
       } catch (error) {
@@ -448,29 +434,85 @@ const SizingTab = () => {
             cellText: false
           });
 
-          setLoadingMessage('Extracting cable data...');
+          setLoadingMessage('Extracting cable data from all sheets...');
 
-          const sheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[sheetName];
+          // Helper to get column value with flexible naming
+          const getColValue = (row: any, ...variations: string[]): any => {
+            for (const v of variations) {
+              if (v in row && row[v] !== '' && row[v] !== null) return row[v];
+            }
+            const lowerKeys = Object.keys(row).reduce((acc: any, k) => {
+              acc[k.toLowerCase().trim()] = row[k];
+              return acc;
+            }, {});
+            for (const v of variations) {
+              const lower = v.toLowerCase().trim();
+              if (lower in lowerKeys && lowerKeys[lower] !== '' && lowerKeys[lower] !== null) return lowerKeys[lower];
+            }
+            return undefined;
+          };
 
-          // Parse as objects to maintain data types
-          const jsonData = XLSX.utils.sheet_to_json(worksheet, {
-            defval: '',
-            blankrows: false
+          // Read ALL sheets from the workbook
+          const allSheetsData: Record<string, CableCatalogue[]> = {};
+          let firstSheetName = '3C'; // Default if nothing else found
+
+          workbook.SheetNames.forEach((sheetName) => {
+            const worksheet = workbook.Sheets[sheetName];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet, {
+              defval: '',
+              blankrows: false
+            });
+
+            // Map raw Excel data to CableCatalogue format
+            const mappedData = jsonData
+              .map((row: any): CableCatalogue | null => {
+                const size = getColValue(row, 'Size (mm²)', 'size', 'Size', 'Area', 'area');
+                const current = getColValue(row, 'Current (A)', 'current', 'Current', 'Air Rating (A)', 'air', 'rating');
+                const resistance = getColValue(row, 'Resistance (Ω/km)', 'Resistance (Ohm/km)', 'resistance', 'Resistance @ 90°C (Ω/km)', 'R', 'resistance (ohm/km)');
+                const reactance = getColValue(row, 'Reactance (Ω/km)', 'Reactance (Ohm/km)', 'reactance', 'Reactance', 'X', 'reactance (ohm/km)');
+                
+                // Only include if has size (required field)
+                if (size === undefined || size === '' || size === null) return null;
+                
+                // Safe number parsing
+                const parseNum = (val: any): number => {
+                  if (val === undefined || val === null || val === '') return 0;
+                  const trimmed = String(val).trim().replace('%', '').replace(',', '');
+                  const n = Number(trimmed);
+                  return Number.isFinite(n) ? n : 0;
+                };
+                
+                return {
+                  size: parseNum(size),
+                  current: parseNum(current),
+                  resistance: parseNum(resistance),
+                  reactance: parseNum(reactance),
+                  cores: sheetName as any
+                };
+              })
+              .filter((item): item is CableCatalogue => item !== null && item.size > 0);
+
+            if (mappedData.length > 0) {
+              allSheetsData[sheetName] = mappedData;
+              
+              // Set first non-empty sheet as active
+              if (Object.keys(allSheetsData).length === 1) {
+                firstSheetName = sheetName;
+              }
+
+              console.log(`[CATALOGUE] Sheet "${sheetName}": ${mappedData.length} sizes loaded`);
+              console.log(`[CATALOGUE] Sample: ${JSON.stringify(mappedData[0])}`);
+            }
           });
-
-          // Filter out completely empty objects
-          const validData = jsonData.filter((row: any) =>
-            Object.values(row).some(val => val !== null && val !== undefined && val !== '')
-          );
 
           setLoadingMessage('Catalogue processing complete!');
 
           setTimeout(() => {
-            setCatalogueData(validData as CableCatalogue[]);
+            setCatalogueData(allSheetsData);
+            setActiveCatalogueTab(firstSheetName);
             setIsLoadingCatalogue(false);
 
-            console.log(`Loaded ${validData.length} catalogue entries`);
+            console.log(`Loaded catalogue with sheets: ${Object.keys(allSheetsData).join(', ')}`);
           }, 500);
 
         }, 800);
@@ -507,6 +549,56 @@ const SizingTab = () => {
     setTimeout(() => setIsCalculating(false), 2000);
   };
 
+  const handleColumnMappingConfirm = (mappings: Record<string, string | null>) => {
+    setShowMappingModal(false);
+    
+    // Re-map raw feeder rows using the confirmed mappings
+    const remappedFeeders: FeederData[] = rawExcelRows.map((row, index) => {
+      const feeder: any = { id: index + 1 };
+      
+      // Preserve all original columns first
+      Object.keys(row).forEach(originalHeader => {
+        feeder[originalHeader] = row[originalHeader];
+      });
+      
+      // Add standardized field columns based on mappings
+      Object.entries(mappings).forEach(([fieldName, excelHeader]) => {
+        if (excelHeader) {
+          feeder[fieldName] = row[excelHeader] || '';
+        }
+      });
+      
+      return feeder as FeederData;
+    });
+
+    console.log('[COLUMN MAPPING] Remapped feeders (first row):', remappedFeeders[0]);
+
+    // Normalize feeders using expanded column matching
+    const normalizedFeeders = normalizeFeeders(remappedFeeders);
+    
+    console.log('[NORMALIZATION] Normalized feeders (first 3):', normalizedFeeders.slice(0, 3));
+    console.log('[NORMALIZATION] Load kW values:', normalizedFeeders.map(f => ({ cable: f.cableNumber, loadKW: f.loadKW })));
+    
+    const analysis = analyzeAllPaths(normalizedFeeders);
+
+    setFeederData(remappedFeeders);
+    setFeederHeaders(rawExcelHeaders);
+    setPathAnalysis(analysis);
+    setContextPathAnalysis(analysis);
+    setContextNormalizedFeeders(normalizedFeeders); // Store normalized feeders for Results page
+
+    console.log(`✓ Processed ${remappedFeeders.length} feeders`);
+    console.log(`✓ Discovered ${analysis.totalPaths} paths`);
+    console.log(`✓ Valid paths: ${analysis.validPaths}`);
+  };
+
+  const handleColumnMappingCancel = () => {
+    setShowMappingModal(false);
+    setRawExcelHeaders([]);
+    setRawExcelRows([]);
+    setColumnMappings({});
+  };
+
   const handleEdit = (id: number) => {
     setEditingRow(id);
   };
@@ -522,10 +614,27 @@ const SizingTab = () => {
     setFeederData(prev => prev.filter(item => item.id !== id));
   };
 
-  const catalogue = catalogueData.length > 0 ? catalogueData : defaultCatalogue;
+  // Build catalogue: use custom data if available, otherwise use default
+  const defaultCatalogueWithCores = defaultCatalogue.map(c => ({ ...c, cores: '3C' as const }));
+  const catalogueSheets: Record<string, CableCatalogue[]> = Object.keys(catalogueData).length > 0 ? catalogueData : {
+    '3C': defaultCatalogueWithCores
+  };
+  const catalogueTabs = Object.keys(catalogueSheets);
+  const activeCatalogue = (catalogueSheets[activeCatalogueTab] as CableCatalogue[]) || defaultCatalogueWithCores;
 
   return (
     <div className="space-y-6">
+      {/* Column Mapping Modal */}
+      {showMappingModal && (
+        <ColumnMappingModal
+          excelHeaders={rawExcelHeaders}
+          parsedRows={rawExcelRows}
+          detectedMappings={columnMappings}
+          onConfirm={handleColumnMappingConfirm}
+          onCancel={handleColumnMappingCancel}
+        />
+      )}
+
       {/* Loading Overlay */}
       {(isLoadingFeeder || isLoadingCatalogue) && (
         <LoadingOverlay message={loadingMessage} />
@@ -668,9 +777,9 @@ const SizingTab = () => {
               </>
             )}
           </div>
-          {catalogueData.length > 0 && (
+          {catalogueTabs.length > 0 && (
             <p className="mt-4 text-green-400 text-sm">
-              ✓ Custom catalogue loaded ({catalogueData.length} sizes)
+              ✓ Custom catalogue loaded ({catalogueTabs.length} core configs)
             </p>
           )}
         </div>
@@ -823,16 +932,33 @@ const SizingTab = () => {
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-lg font-semibold text-white">Cable Catalogue</h3>
           <span className="text-sm text-slate-400">
-            {catalogue.length} cable sizes available
+            {activeCatalogue.length} cable sizes available
           </span>
         </div>
+
+        {/* Catalogue Tabs */}
+        {catalogueTabs.length > 0 && (
+          <div className="flex gap-2 mb-4 border-b border-slate-600 pb-3 overflow-x-auto">
+            {catalogueTabs.map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveCatalogueTab(tab)}
+                className={`px-4 py-2 text-sm font-medium rounded-t-lg whitespace-nowrap transition-colors ${
+                  activeCatalogueTab === tab
+                    ? 'bg-cyan-600 text-white'
+                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="max-h-64 overflow-auto">
           <table className="min-w-full divide-y divide-slate-700">
             <thead className="bg-slate-700 sticky top-0 z-10">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider whitespace-nowrap">
-                  Cores
-                </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-300 uppercase tracking-wider whitespace-nowrap">
                   Size (mm²)
                 </th>
@@ -848,9 +974,8 @@ const SizingTab = () => {
               </tr>
             </thead>
             <tbody className="bg-slate-800 divide-y divide-slate-700">
-              {catalogue.map((item, index) => (
+              {activeCatalogue.map((item: CableCatalogue, index: number) => (
                 <tr key={index} className="hover:bg-slate-700">
-                  <td className="px-4 py-3 text-sm text-cyan-400 font-semibold whitespace-nowrap">{item.cores || '3C'}</td>
                   <td className="px-4 py-3 text-sm text-slate-300 whitespace-nowrap">{item.size}</td>
                   <td className="px-4 py-3 text-sm text-slate-300 whitespace-nowrap">{item.current}</td>
                   <td className="px-4 py-3 text-sm text-slate-300 whitespace-nowrap">{item.resistance}</td>

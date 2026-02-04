@@ -42,7 +42,7 @@ interface CableSizingResult {
   
   // Results
   cableDesignation: string;
-  drivingConstraint: 'Ampacity' | 'VoltageDrop' | 'ISc'; // Which constraint drove selection
+  drivingConstraint: 'Ampacity' | 'RunningVdrop' | 'StartingVdrop' | 'ISc'; // Which constraint drove selection
   catalogRating: number; // Current rating from catalog
   shortCircuitCurrent?: number;
   breakerSize?: string;
@@ -99,6 +99,17 @@ const calculateCableSizing = (cable: CableSegment): CableSizingResult => {
     const loadType = (cable.loadType || 'Motor') as keyof typeof LoadTypeSpecs;
     const specs = LoadTypeSpecs[loadType] || LoadTypeSpecs.Motor;
     
+    // DEBUG: Log incoming cable data VERY DETAILED
+    console.log(`\n[CABLE INPUT] ${cable.cableNumber}:`);
+    console.log(`  loadKW: ${cable.loadKW} (type: ${typeof cable.loadKW})`);
+    console.log(`  voltage: ${cable.voltage} (type: ${typeof cable.voltage})`);
+    console.log(`  length: ${cable.length}`);
+    console.log(`  powerFactor: ${cable.powerFactor}`);
+    console.log(`  efficiency: ${cable.efficiency}`);
+    console.log(`  numberOfCores: ${cable.numberOfCores}`);
+    console.log(`  installationMethod: ${cable.installationMethod}`);
+    console.log(`  loadType: ${loadType}`);
+    
     const engineInput: CableSizingInputV2 = {
       loadType,
       ratedPowerKW: cable.loadKW || 0.1,
@@ -114,25 +125,26 @@ const calculateCableSizing = (cable: CableSegment): CableSizingResult => {
         : 'Air') as 'Air' | 'Trench' | 'Duct',
       cableLength: cable.length || 0,
       ambientTemp: cable.ambientTemp || 40,
-      // ISc check only if protection type is 'ACB'
+      numberOfLoadedCircuits: cable.numberOfLoadedCircuits || 1,
+      startingMethod: cable.startingMethod || 'DOL',
       protectionType: cable.protectionType || 'None',
-      maxShortCircuitCurrent: cable.maxShortCircuitCurrent
+      maxShortCircuitCurrent: cable.maxShortCircuitCurrent,
+      protectionClearingTime: cable.protectionClearingTime || 0.1
     };
 
-    // Run simplified sizing engine (V2: direct catalog lookup, no parallel runs)
+    console.log(`[ENGINE INPUT] for ${cable.cableNumber}:`, engineInput);
+
+    // Run EPC-grade sizing engine (V3 logic in V2)
     const engine = new CableSizingEngine_V2();
     const engineResult = engine.sizeCable(engineInput);
 
-    // Calculate FLC for display
-    const voltage = cable.voltage;
-    const phaseCount = cable.phase === '1Ø' ? 1 : 3;
-    const efficiency = engineInput.efficiency || 0.95;
-    const powerFactor = engineInput.powerFactor || 0.85;
-    const flc = phaseCount === 1 
-      ? (engineInput.ratedPowerKW * 1000) / (voltage * powerFactor * efficiency)
-      : (engineInput.ratedPowerKW * 1000) / (Math.sqrt(3) * voltage * powerFactor * efficiency);
+    console.log(`[ENGINE OUTPUT] for ${cable.cableNumber}:`, {
+      fullLoadCurrent: engineResult.fullLoadCurrent,
+      sizeByAmpacity: engineResult.sizeByAmpacity,
+      status: engineResult.status
+    });
 
-    // Map result to display format
+    // Map result to display format (using engine outputs directly - they are correct now)
     const result: CableSizingResult = {
       serialNo: cable.serialNo,
       cableNumber: cable.cableNumber,
@@ -142,27 +154,27 @@ const calculateCableSizing = (cable: CableSegment): CableSizingResult => {
       voltage: cable.voltage,
       length: cable.length || 0,
       loadKW: cable.loadKW || 0,
-      powerFactor: efficiency,
-      efficiency: powerFactor,
-      deratingFactor: engineResult.deratingFactor,
+      powerFactor: engineInput.powerFactor || 0.85,
+      efficiency: engineInput.efficiency || 0.95,
+      deratingFactor: engineResult.deratingFactor || 0.87,
       conductorMaterial: engineInput.conductorMaterial as 'Cu' | 'Al',
       numberOfCores: engineInput.numberOfCores,
-      fullLoadCurrent: flc,
-      startingCurrent: undefined,
-      deratedCurrent: flc * engineResult.deratingFactor, // Apply derating
-      cableResistance: 0, // Not available in V2
-      voltageDrop: engineResult.voltageDropVolt || 0,
-      voltageDropPercent: engineResult.voltageDropPercent || 0,
-      sizeByCurrent: engineResult.sizeByAmpacity,
-      sizeByVoltageDrop: engineResult.sizeByVoltageDrop,
+      fullLoadCurrent: engineResult.fullLoadCurrent || 0,
+      startingCurrent: engineResult.startingCurrent || 0,
+      deratedCurrent: engineResult.effectiveCurrentAtRun || 0, // This is I_FL / K_total (required rating)
+      cableResistance: 0, // Get from catalog if needed
+      voltageDrop: engineResult.voltageDropRunning_volt || 0,
+      voltageDropPercent: (engineResult.voltageDropRunning_percent || 0) * 100, // Convert to percentage
+      sizeByCurrent: engineResult.sizeByAmpacity || 0,
+      sizeByVoltageDrop: engineResult.sizeByRunningVdrop || 0,
       sizeByShortCircuit: engineResult.sizeByISc || 0,
-      suitableCableSize: engineResult.selectedConductorArea,
-      numberOfRuns: 1, // V2 doesn't use parallel runs
-      cableDesignation: engineResult.cableDesignation,
-      drivingConstraint: engineResult.drivingConstraint || 'Ampacity',
-      catalogRating: engineResult.catalogRating,
-      shortCircuitCurrent: (engineResult.installedRating || 0) * 1000, // Use installed rating as proxy
-      breakerSize: `${Math.ceil(flc / 10) * 10}A`,
+      suitableCableSize: engineResult.selectedConductorArea || 0,
+      numberOfRuns: engineResult.numberOfRuns || 1,
+      cableDesignation: engineResult.cableDesignation || '',
+      drivingConstraint: (engineResult.drivingConstraint || 'Ampacity') as any,
+      catalogRating: engineResult.catalogRatingPerRun || 0,
+      shortCircuitCurrent: engineResult.shortCircuitWithstand_kA ? engineResult.shortCircuitWithstand_kA * 1000 : 0,
+      breakerSize: `${Math.ceil(engineResult.fullLoadCurrent / 10) * 10}A`,
       status: engineResult.status,
       warnings: engineResult.warnings,
       anomalies: engineResult.warnings
@@ -175,7 +187,14 @@ const calculateCableSizing = (cable: CableSegment): CableSizingResult => {
     return result;
   } catch (error) {
     // Fallback for invalid data
-    console.warn('Cable sizing error:', error);
+    console.error(`❌ CABLE SIZING ERROR for ${cable.cableNumber}:`, error);
+    console.error('Cable object:', cable);
+    console.error('Engine input was:', {
+      ratedPowerKW: cable.loadKW,
+      voltage: cable.voltage,
+      numberOfCores: cable.numberOfCores,
+      installationMethod: cable.installationMethod
+    });
     return {
       serialNo: cable.serialNo,
       cableNumber: cable.cableNumber,
@@ -210,7 +229,7 @@ const calculateCableSizing = (cable: CableSegment): CableSizingResult => {
 };
 
 const ResultsTab = () => {
-  const { pathAnalysis } = usePathContext();
+  const { normalizedFeeders } = usePathContext();
   const [results, setResults] = useState<CableSizingResult[]>([]);
   const [showCustomize, setShowCustomize] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>(() => {
@@ -244,41 +263,33 @@ const ResultsTab = () => {
     localStorage.setItem('results_visible_columns', JSON.stringify(visibleColumns));
   }, [visibleColumns]);
 
-  // Generate results from paths on component mount
+  // Generate results from ALL normalized feeders (not just discovered paths)
   const generateResults = () => {
-    if (!pathAnalysis || !pathAnalysis.paths) return [];
+    if (!normalizedFeeders || normalizedFeeders.length === 0) return [];
 
-    const allCables: CableSizingResult[] = [];
-    const seen = new Set<number>();
-
-    // Flatten all cables from all paths and calculate sizing
-    // Deduplicate by serialNo while preserving first occurrence order
-    pathAnalysis.paths.forEach((path) => {
-      path.cables.forEach((cable) => {
-        if (!seen.has(cable.serialNo)) {
-          seen.add(cable.serialNo);
-            const result = calculateCableSizing(cable);
-            // detect anomalies based on inputs and sizing
-            const issues = detectAnomalies(cable, result);
-            result.anomalies = issues;
-            result.isAnomaly = issues.length > 0;
-            allCables.push(result);
-        }
+    // Process ALL feeders in input order, not just those in paths
+    const allCables: CableSizingResult[] = normalizedFeeders
+      .sort((a, b) => a.serialNo - b.serialNo) // Maintain input order by serial number
+      .map((cable) => {
+        const result = calculateCableSizing(cable);
+        const issues = detectAnomalies(cable, result);
+        result.anomalies = issues;
+        result.isAnomaly = issues.length > 0;
+        return result;
       });
-    });
 
     return allCables;
   };
 
-  // Initialize results from paths when pathAnalysis changes
+  // Initialize results from normalized feeders when they change
   useEffect(() => {
-    if (pathAnalysis && pathAnalysis.paths && pathAnalysis.paths.length > 0) {
+    if (normalizedFeeders && normalizedFeeders.length > 0) {
       setResults(generateResults());
     } else {
       setResults([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathAnalysis]);
+  }, [normalizedFeeders]);
 
   if (results.length === 0) {
     return (

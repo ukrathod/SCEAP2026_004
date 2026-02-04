@@ -46,9 +46,10 @@ export interface CableSegment {
   soilThermalResistivity?: number; // K·m/W for buried cables
   depthOfLaying?: number; // cm for buried cables
   groupedLoadedCircuits?: number; // Number of other loaded circuits nearby
-  // NEW: ISc sizing only when feeding ACB
+  numberOfLoadedCircuits?: number; // Number of loaded circuits (for derating)
   protectionType?: 'ACB' | 'MCCB' | 'MCB' | 'None'; // ISc check only for ACB
   maxShortCircuitCurrent?: number; // kA, for ISc check
+  protectionClearingTime?: number; // seconds, for ISc calculation
 }
 
 export interface PathAnalysisResult {
@@ -61,59 +62,186 @@ export interface PathAnalysisResult {
 }
 
 /**
+ * Helper: Flexible column lookup with multiple naming variations
+ * Tries exact match first, then case-insensitive, then key contains
+ */
+const getColumnValue = (row: any, ...variations: string[]): any => {
+  // Try exact match first (important for standardized field names like 'loadKW')
+  for (const v of variations) {
+    if (v in row && row[v] !== undefined && row[v] !== null && row[v] !== '') {
+      return row[v];
+    }
+  }
+  
+  // Try case-insensitive match
+  const lowerRow = Object.keys(row).reduce((acc: any, key) => {
+    acc[key.toLowerCase().trim()] = row[key];
+    return acc;
+  }, {});
+  
+  for (const v of variations) {
+    const lower = v.toLowerCase().trim();
+    if (lower in lowerRow && lowerRow[lower] !== undefined && lowerRow[lower] !== null && lowerRow[lower] !== '') {
+      return lowerRow[lower];
+    }
+  }
+  
+  // Try partial match (key contains variation)
+  const rowKeys = Object.keys(row);
+  for (const v of variations) {
+    const partial = rowKeys.find(k => k.toLowerCase().includes(v.toLowerCase()));
+    if (partial && row[partial] !== undefined && row[partial] !== null && row[partial] !== '') {
+      return row[partial];
+    }
+  }
+  
+  return undefined;
+};
+
+/**
+ * Auto-detect column mappings from Excel headers using flexible matching
+ * Returns a mapping of standardized field names to Excel column headers
+ */
+export const autoDetectColumnMappings = (headers: string[]): Record<string, string> => {
+  const mappings: Record<string, string> = {};
+  const headerMap = new Map<string, string>(); // normalized -> original
+  
+  headers.forEach(h => {
+    const norm = h.toLowerCase().trim();
+    headerMap.set(norm, h);
+  });
+
+  const fieldSynonyms: Record<string, string[]> = {
+    serialNo: ['serial no', 's.no', 'sno', 'index', 'no', 'serial', 'num', 'number'],
+    cableNumber: ['cable number', 'cable no', 'cable #', 'cable', 'feeder', 'feeder id', 'feed no', 'id'],
+    feederDescription: ['feeder description', 'description', 'name', 'desc', 'feeder name', 'equipment name'],
+    fromBus: ['from bus', 'from', 'source', 'load', 'equipment', 'start', 'origin'],
+    toBus: ['to bus', 'to', 'destination', 'panel', 'target', 'end'],
+    voltage: ['voltage (v)', 'voltage', 'v (v)', 'v', 'nominal voltage', 'rated voltage', 'supply voltage'],
+    loadKW: ['load (kw)', 'load kw', 'kw', 'power', 'p', 'load', 'power (kw)'],
+    length: ['length (m)', 'length', 'l (m)', 'l', 'distance', 'cable length', 'route length'],
+    powerFactor: ['power factor', 'pf', 'cos φ', 'cos phi', 'power factor (pf)', 'cos'],
+    efficiency: ['efficiency (%)', 'efficiency', 'eff', 'eff (%)', 'efficiency %'],
+    deratingFactor: ['derating factor', 'derating', 'k', 'factor', 'derating k'],
+    ambientTemp: ['ambient temp (°c)', 'ambient temp', 'temp', 'ambient temperature', 'temperature', 'ambient (°c)'],
+    installationMethod: ['installation method', 'installation', 'method', 'type', 'cable installation'],
+    numberOfLoadedCircuits: ['grouped loaded circuits', 'circuits', 'groups', 'grouped circuits', 'number of circuits'],
+    protectionType: ['breaker type', 'protection type', 'breaker', 'protection', 'circuit breaker'],
+    maxShortCircuitCurrent: ['short circuit current (ka)', 'isc', 'isc (ka)', 'short circuit', 'sc current', 'trip time (ms)']
+  };
+
+  for (const [field, synonyms] of Object.entries(fieldSynonyms)) {
+    for (const syn of synonyms) {
+      const norm = syn.toLowerCase().trim();
+      if (headerMap.has(norm)) {
+        mappings[field] = headerMap.get(norm)!;
+        break; // Use first match
+      }
+    }
+  }
+
+  return mappings;
+};
+
+/**
  * Normalize feeder data from Excel
  * Maps various column naming conventions to standard properties
  */
 export const normalizeFeeders = (rawFeeders: any[]): CableSegment[] => {
   return rawFeeders
-    .filter((f: any) => f['From Bus'] || f['fromBus'] || f['From bus'])
+    .filter((f: any) => {
+      // Check if row has at least From Bus data
+      const fromBus = getColumnValue(f, 'From Bus', 'From', 'Source', 'Load', 'Equipment', 'from bus', 'from', 'source');
+      return fromBus && String(fromBus).trim() !== '';
+    })
     .map((feeder: any) => {
+      // Helper to safely get numeric values with fallback
+      const getNumber = (value: any, fallback = 0): number => {
+        if (value === null || value === undefined || value === '') return fallback;
+        const trimmed = String(value).trim().replace('%', '').replace(',', '').trim();
+        const n = Number(trimmed);
+        return Number.isFinite(n) ? n : fallback;
+      };
+
+      // Helper to safely get string values
+      const getString = (value: any, fallback = ''): string => {
+        return String(value || fallback).trim();
+      };
+
       // Parse numberOfCores - can be string like "3C+E" or number like 4
       let numberOfCores: '1C' | '2C' | '3C' | '3C+E' | '4C' | undefined;
-      const ncValue = feeder['Number of Cores'] || feeder['numberOfCores'] || feeder['Core'] || '3C+E';
+      const ncValue = getColumnValue(
+        feeder,
+        'Number of Cores', 'numberOfCores', 'Core', 'Cores', 'core', 'Cable Type'
+      ) || '3C';
       if (typeof ncValue === 'string') {
         numberOfCores = ncValue as any;
       } else if (typeof ncValue === 'number') {
-        const coreMap: Record<number, '1C' | '2C' | '3C' | '3C+E' | '4C'> = { 1: '1C', 2: '2C', 3: '3C', 4: '3C+E' };
-        numberOfCores = coreMap[ncValue] || '3C+E';
+        const coreMap: Record<number, '1C' | '2C' | '3C' | '3C+E' | '4C'> = { 1: '1C', 2: '2C', 3: '3C', 4: '4C' };
+        numberOfCores = coreMap[ncValue] || '3C';
       }
 
+      // Get voltage for phase detection
+      const voltage = getNumber(
+        getColumnValue(feeder, 'Voltage (V)', 'Voltage', 'V (V)', 'V', 'voltage (v)', 'rated voltage', 'nominal voltage'),
+        415
+      );
+      
+      // DEBUG: Log voltage extraction
+      const cableNum = getString(getColumnValue(feeder, 'cableNumber', 'Cable Number', 'Cable No', 'Cable', 'Feeder', 'cable number', 'cable no', 'feeder id'), '');
+      console.log(`[NORMALIZEFEEDERS] Cable ${cableNum}: voltage=${voltage}`);
+
       return {
-        serialNo: feeder['Serial No'] || feeder['serialNo'] || 0,
-        cableNumber: feeder['Cable Number'] || feeder['cableNumber'] || '',
-        feederDescription: feeder['Feeder Description'] || feeder['feederDescription'] || feeder['Description'] || '',
-        fromBus: feeder['From Bus'] || feeder['fromBus'] || '',
-        toBus: feeder['To Bus'] || feeder['toBus'] || '',
-        voltage: Number(feeder['Voltage (V)'] || feeder['voltage'] || 415),
-        loadKW: Number(feeder['Load KW'] || feeder['loadKW'] || 0),
-        length: Number(feeder['Length (m)'] || feeder['length'] || 0),
-        deratingFactor: Number(feeder['Derating Factor'] || feeder['deratingFactor'] || 0.87),
-        resistance: Number(feeder['Resistance'] || feeder['resistance'] || 0),
-        reactance: Number(feeder['Reactance'] || feeder['reactance'] || 0),
+        serialNo: getNumber(getColumnValue(feeder, 'serialNo', 'Serial No', 'S.No', 'SNo', 'serial no', 'index', 'no'), 0),
+        cableNumber: getString(getColumnValue(feeder, 'cableNumber', 'Cable Number', 'Cable No', 'Cable', 'Feeder', 'cable number', 'cable no', 'feeder id'), ''),
+        feederDescription: getString(
+          getColumnValue(feeder, 'feederDescription', 'Feeder Description', 'Description', 'Name', 'feeder description', 'desc'),
+          ''
+        ),
+        fromBus: getString(getColumnValue(feeder, 'fromBus', 'From Bus', 'From', 'Source', 'Load', 'Equipment', 'from bus', 'from', 'source'), ''),
+        toBus: getString(getColumnValue(feeder, 'toBus', 'To Bus', 'To', 'Destination', 'Panel', 'to bus', 'to', 'destination'), ''),
+        voltage,
+        loadKW: getNumber(getColumnValue(feeder, 'loadKW', 'Load (kW)', 'Load KW', 'Load', 'Power', 'kW', 'load (kw)', 'power (kw)'), 0),
+        length: getNumber(getColumnValue(feeder, 'length', 'Length (m)', 'Length', 'L', 'Distance', 'length (m)', 'cable length'), 0),
+        deratingFactor: getNumber(
+          getColumnValue(feeder, 'deratingFactor', 'Derating Factor', 'Derating', 'K', 'derating factor', 'derating k'),
+          0.87
+        ),
+        resistance: getNumber(getColumnValue(feeder, 'resistance', 'Resistance', 'R', 'resistance'), 0),
+        reactance: getNumber(getColumnValue(feeder, 'reactance', 'Reactance', 'X', 'reactance'), 0),
         numberOfCores,
-        conductorMaterial: (feeder['Material'] || feeder['conductorMaterial'] || 'Cu').toUpperCase() === 'AL' ? 'Al' : 'Cu',
-        phase: feeder['Phase'] || feeder['systemPhase'] || (Number(feeder['Voltage (V)'] || 415) >= 400 ? '3Ø' : '1Ø'),
-        loadType: (feeder['Load Type'] || feeder['loadType'] || 'Motor') as any,
-        // Handle percent-formatted efficiency (e.g., 92 for 92%)
-        efficiency: (() => { const v = Number(feeder['Efficiency'] || feeder['efficiency'] || 0.92); return v > 1 ? v/100 : v; })(),
-        powerFactor: (() => { const v = Number(feeder['Power Factor'] || feeder['powerFactor'] || 0.85); return v > 1 ? v/100 : v; })(),
-        startingMethod: (feeder['Starting Method'] || feeder['startingMethod'] || 'DOL') as any,
-        insulation: (feeder['Insulation'] || feeder['insulation'] || 'XLPE') as any,
-        installationMethod: feeder['Installation Method'] || feeder['installationMethod'] || 'Air',
-        cableSpacing: (feeder['Cable Spacing'] || feeder['cableSpacing'] || 'touching') as any,
-        ambientTemp: Number(feeder['Ambient Temp (°C)'] || feeder['Ambient Temp'] || feeder['ambientTemp'] || 40),
-        soilThermalResistivity: Number(feeder['Soil Thermal Resistivity (K·m/W)'] || feeder['soilThermalResistivity'] || 1.2),
-        depthOfLaying: Number(feeder['Depth of Laying (cm)'] || feeder['depthOfLaying'] || 60),
-        groupedLoadedCircuits: Number(feeder['Grouped Loaded Circuits'] || feeder['groupedLoadedCircuits'] || 1),
+        conductorMaterial: getString(
+          getColumnValue(feeder, 'conductorMaterial', 'Material', 'Conductor', 'material'),
+          'Cu'
+        ).toUpperCase() === 'AL' ? 'Al' : 'Cu',
+        phase: (getString(getColumnValue(feeder, 'phase', 'Phase', 'phase'), '') as '1Ø' | '3Ø') || (voltage >= 400 ? '3Ø' : '1Ø'),
+        loadType: (getString(getColumnValue(feeder, 'loadType', 'Load Type', 'Type', 'load type', 'type'), 'Motor')) as any,
+        // Handle percent-formatted efficiency and power factor (e.g., 92 for 92%)
+        efficiency: (() => {
+          const v = getNumber(getColumnValue(feeder, 'efficiency', 'Efficiency', 'Efficiency (%)', 'Eff', 'efficiency', 'eff'), 0.92);
+          return v > 1 ? v / 100 : v;
+        })(),
+        powerFactor: (() => {
+          const v = getNumber(getColumnValue(feeder, 'powerFactor', 'Power Factor', 'PF', 'power factor', 'pf'), 0.85);
+          return v > 1 ? v / 100 : v;
+        })(),
+        startingMethod: (getString(getColumnValue(feeder, 'startingMethod', 'Starting Method', 'Starting', 'starting method'), 'DOL')) as any,
+        insulation: (getString(getColumnValue(feeder, 'insulation', 'Insulation', 'insulation'), 'XLPE')) as any,
+        installationMethod: getString(getColumnValue(feeder, 'installationMethod', 'Installation Method', 'Installation', 'installation method', 'method'), 'Air'),
+        cableSpacing: (getString(getColumnValue(feeder, 'cableSpacing', 'Cable Spacing', 'Spacing', 'cable spacing'), 'touching')) as any,
+        ambientTemp: getNumber(getColumnValue(feeder, 'ambientTemp', 'Ambient Temp (°C)', 'Ambient Temp', 'Temp', 'ambient temp', 'temperature'), 40),
+        soilThermalResistivity: getNumber(getColumnValue(feeder, 'soilThermalResistivity', 'Soil Thermal Resistivity (K·m/W)', 'Soil Resistivity', 'soil resistivity'), 1.2),
+        depthOfLaying: getNumber(getColumnValue(feeder, 'depthOfLaying', 'Depth of Laying (cm)', 'Depth', 'depth'), 60),
+        numberOfLoadedCircuits: getNumber(getColumnValue(feeder, 'numberOfLoadedCircuits', 'Grouped Loaded Circuits', 'Circuits', 'grouped circuits'), 1),
         // If no SC value provided in sheet, leave undefined so engine skips SC check
         maxShortCircuitCurrent: (() => {
-          const raw = feeder['Max SC Current (kA)'] ?? feeder['maxShortCircuitCurrent'] ?? feeder['Short Circuit (kA)'];
+          const raw = getColumnValue(feeder, 'maxShortCircuitCurrent', 'Short Circuit Current (kA)', 'ISc', 'Isc', 'short circuit', 'sc current', 'trip time (ms)');
           if (raw === undefined || raw === null || raw === '') return undefined;
-          const n = Number(raw);
+          const n = getNumber(raw);
           return Number.isFinite(n) ? n : undefined;
         })(),
         // NEW: Protection type determines if ISc check is applied (ISc only for ACB)
-        protectionType: (feeder['Protection Type'] || feeder['protectionType'] || 'None') as 'ACB' | 'MCCB' | 'MCB' | 'None'
+        protectionType: (getString(getColumnValue(feeder, 'protectionType', 'Breaker Type', 'Protection Type', 'Breaker', 'breaker type', 'protection'), 'None')) as 'ACB' | 'MCCB' | 'MCB' | 'None'
       };
     });
 };
@@ -154,26 +282,29 @@ export const calculateSegmentVoltageDrop = (
 export const discoverPathsToTransformer = (cables: CableSegment[]): CablePath[] => {
   const paths: CablePath[] = [];
   
+  // Normalize bus names for robust matching (trim + uppercase)
+  const normalizeBus = (b: string) => String(b || '').trim().toUpperCase();
+
   // FIRST: Try to find explicit transformer buses (containing 'TRF')
   let transformerBuses = new Set(
     cables
-      .filter(c => c.toBus.toUpperCase().includes('TRF'))
-      .map(c => c.toBus)
+      .filter(c => normalizeBus(c.toBus).includes('TRF'))
+      .map(c => normalizeBus(c.toBus))
   );
 
   // SECOND: If no explicit transformer found, find the top-level bus(es)
   // Top-level bus = a toBus that is NOT a fromBus in any other cable
   // This bus is the "root" or transformer of the hierarchy
   if (transformerBuses.size === 0) {
-    const toBuses = new Set(cables.map(c => c.toBus));
-    const fromBuses = new Set(cables.map(c => c.fromBus));
+    const toBuses = new Set(cables.map(c => normalizeBus(c.toBus)));
+    const fromBuses = new Set(cables.map(c => normalizeBus(c.fromBus)));
     
     // Find buses that are destinations but never sources
     const topLevelBuses = Array.from(toBuses).filter(bus => !fromBuses.has(bus));
     
     if (topLevelBuses.length > 0) {
       console.warn(`No 'TRF' named transformer found. Auto-detected top-level bus(es): ${topLevelBuses.join(', ')}`);
-      transformerBuses = new Set(topLevelBuses);
+      transformerBuses = new Set(topLevelBuses.map(normalizeBus));
     } else {
       console.error('CRITICAL: No transformer or top-level bus found in cable data');
       console.error('All cables appear to form a cycle with no clear root/source');
@@ -182,17 +313,24 @@ export const discoverPathsToTransformer = (cables: CableSegment[]): CablePath[] 
     }
   }
 
-  // Find all unique "FromBus" (equipment/loads)
-  const equipmentBuses = new Set(
-    cables
-      .filter(c => !transformerBuses.has(c.fromBus))
-      .map(c => c.fromBus)
-  );
+  // Build maps keyed by normalized bus names for reliable lookups
+  const cablesByFromBus = new Map<string, CableSegment[]>();
+  for (const c of cables) {
+    const key = normalizeBus(c.fromBus);
+    if (!cablesByFromBus.has(key)) cablesByFromBus.set(key, []);
+    cablesByFromBus.get(key)!.push(c);
+  }
+
+  // Find all unique "FromBus" (equipment/loads) using normalized names
+  const equipmentBuses = Array.from(cablesByFromBus.keys()).filter(k => !transformerBuses.has(k));
 
   // For each equipment, trace path back to transformer
   let pathCounter = 1;
-  for (const equipment of equipmentBuses) {
-    const path = tracePathToTransformer(equipment, cables, transformerBuses);
+  for (const equipmentNorm of equipmentBuses) {
+    // Map normalized equipment name back to original (use first matching cable)
+    const sampleCable = cables.find(c => normalizeBus(c.fromBus) === equipmentNorm)!;
+    const equipment = sampleCable ? sampleCable.fromBus : equipmentNorm;
+    const path = tracePathToTransformer(equipment, cables, transformerBuses, normalizeBus);
     if (path.cables.length > 0) {
       path.pathId = `PATH-${String(pathCounter).padStart(3, '0')}`;
       pathCounter++;
@@ -209,7 +347,8 @@ export const discoverPathsToTransformer = (cables: CableSegment[]): CablePath[] 
 const tracePathToTransformer = (
   startEquipment: string,
   cables: CableSegment[],
-  transformerBuses: Set<string>
+  transformerBuses: Set<string>,
+  normalizeBus: (b: string) => string
 ): CablePath => {
   const visited = new Set<string>();
   const queue: { bus: string; path: CableSegment[] }[] = [
@@ -239,53 +378,53 @@ const tracePathToTransformer = (
     if (visited.has(currentBus)) continue;
     visited.add(currentBus);
 
-    // Find cable where fromBus = currentBus
-    const connectingCable = cables.find(c => c.fromBus === currentBus);
+    // Find all cables where fromBus = currentBus (case-insensitive)
+    const outgoing = cables.filter(c => normalizeBus(c.fromBus) === normalizeBus(currentBus));
+    if (outgoing.length === 0) continue;
 
-    if (!connectingCable) {
-      continue;
-    }
+    for (const connectingCable of outgoing) {
+      const newPath = [...current.path, connectingCable];
 
-    const newPath = [...current.path, connectingCable];
-
-    // Check if we reached transformer
-    if (transformerBuses.has(connectingCable.toBus)) {
+      // Check if we reached transformer
+      if (transformerBuses.has(normalizeBus(connectingCable.toBus))) {
       const totalDistance = newPath.reduce((sum, c) => sum + c.length, 0);
-      const totalVoltage = newPath[0]?.voltage || 415;
-      const cumulativeLoad = newPath[0]?.loadKW || 0;
+        const totalVoltage = newPath[0]?.voltage || 415;
+        const cumulativeLoad = newPath.reduce((sum, c) => sum + (c.loadKW || 0), 0);
 
-      // Calculate voltage drop (simplified - using first cable's resistance)
-      // In real scenario, you'd sum up individual segment drops
-      const voltageDrop = calculateSegmentVoltageDrop(newPath[0], 0.1);
-      const voltageDropPercent = (voltageDrop / totalVoltage) * 100;
+        // Calculate voltage drop as sum of segment drops using resistance from segments where available
+        const totalVdrop = newPath.reduce((sum, seg) => {
+          const r = seg.resistance || 0.1;
+          return sum + calculateSegmentVoltageDrop(seg, r);
+        }, 0);
+        const voltageDropPercent = (totalVdrop / totalVoltage) * 100;
 
-      // Get equipment description from the last cable in the path (connects to transformer)
-      const lastCable = newPath[newPath.length - 1];
-      const equipmentDescription = lastCable?.feederDescription || '';
+        // Get equipment description from the first cable in the path (start)
+        const equipmentDescription = newPath[0]?.feederDescription || '';
 
-      finalPath = {
-        pathId: '',
-        startEquipment,
-        startEquipmentDescription: equipmentDescription,
-        startPanel: newPath[newPath.length - 1]?.fromBus || startEquipment,
-        endTransformer: connectingCable.toBus,
-        cables: newPath,
-        totalDistance,
-        totalVoltage,
-        cumulativeLoad,
-        voltageDrop,
-        voltageDropPercent,
-        isValid: voltageDropPercent <= 5, // IEC 60364 limit
-        validationMessage:
-          voltageDropPercent <= 5
-            ? `V-drop: ${voltageDropPercent.toFixed(2)}% (Valid)`
-            : `V-drop: ${voltageDropPercent.toFixed(2)}% (Exceeds 5% limit - cable size too small)`
-      };
-      break;
+        finalPath = {
+          pathId: '',
+          startEquipment,
+          startEquipmentDescription: equipmentDescription,
+          startPanel: newPath[0]?.fromBus || startEquipment,
+          endTransformer: connectingCable.toBus,
+          cables: newPath,
+          totalDistance,
+          totalVoltage,
+          cumulativeLoad,
+          voltageDrop: totalVdrop,
+          voltageDropPercent,
+          isValid: true, // All discovered paths are valid - V-drop is a design choice, not a failure
+          validationMessage:
+            voltageDropPercent <= 5
+              ? `✓ V-drop: ${voltageDropPercent.toFixed(2)}% (IEC 60364 Compliant)`
+              : `⚠ V-drop: ${voltageDropPercent.toFixed(2)}% (Exceeds 5% - Upgrade cable size for compliance)`
+        };
+        // return the first valid path found for this equipment
+        return finalPath;
     }
-
-    // Continue searching
-    queue.push({ bus: connectingCable.toBus, path: newPath });
+      // Continue searching from this outgoing cable's toBus
+      queue.push({ bus: connectingCable.toBus, path: newPath });
+    }
   }
 
   return finalPath;

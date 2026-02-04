@@ -1,9 +1,11 @@
 import { createContext, useContext, useState, ReactNode } from 'react';
-import { PathAnalysisResult } from '../utils/pathDiscoveryService';
+import { PathAnalysisResult, CableSegment } from '../utils/pathDiscoveryService';
 
 interface PathContextType {
   pathAnalysis: PathAnalysisResult | null;
   setPathAnalysis: (analysis: PathAnalysisResult | null) => void;
+  normalizedFeeders: CableSegment[] | null;
+  setNormalizedFeeders: (feeders: CableSegment[] | null) => void;
   selectedPaths: Set<string>;
   togglePathSelection: (pathId: string) => void;
   clearSelection: () => void;
@@ -13,6 +15,7 @@ const PathContext = createContext<PathContextType | undefined>(undefined);
 
 export const PathProvider = ({ children }: { children: ReactNode }) => {
   const [pathAnalysis, setPathAnalysis] = useState<PathAnalysisResult | null>(null);
+  const [normalizedFeeders, setNormalizedFeeders] = useState<CableSegment[] | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
 
   const togglePathSelection = (pathId: string) => {
@@ -30,7 +33,7 @@ export const PathProvider = ({ children }: { children: ReactNode }) => {
   };
 
   return (
-    <PathContext.Provider value={{ pathAnalysis, setPathAnalysis, selectedPaths, togglePathSelection, clearSelection }}>
+    <PathContext.Provider value={{ pathAnalysis, setPathAnalysis, normalizedFeeders, setNormalizedFeeders, selectedPaths, togglePathSelection, clearSelection }}>
       {children}
     </PathContext.Provider>
   );

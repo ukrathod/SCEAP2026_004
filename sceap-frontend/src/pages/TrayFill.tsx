@@ -14,6 +14,7 @@ interface TrayData {
 }
 
 const TrayFill = () => {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [trays, setTrays] = useState<TrayData[]>([
     { id: 1, name: 'Tray-01', length: 10, width: 0.3, fillRatio: 0.85, capacity: 20, status: 'High', issues: 2 },
     { id: 2, name: 'Tray-02', length: 15, width: 0.3, fillRatio: 0.92, capacity: 25, status: 'Critical', issues: 1 },
