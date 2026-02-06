@@ -8,6 +8,15 @@ import { CableSegment } from '../utils/pathDiscoveryService';
 import CableSizingEngine_V2, { CableSizingInput as CableSizingInputV2 } from '../utils/CableSizingEngine_V2';
 import { LoadTypeSpecs } from '../utils/CableEngineeringData';
 import { KEC_CATALOGUE } from '../utils/KEC_CableStandard';
+import { EXCEL_FORMULA_MAPPINGS } from '../utils/ExcelFormulaMappings';
+
+// Helper to get a short, human-readable formula text for a mapping id
+const getFormulaText = (id: number): string => {
+  const f = EXCEL_FORMULA_MAPPINGS.find((m) => m.id === id);
+  if (!f) return '';
+  const raw = (f.implementation || f.excelFormula || '').toString();
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 220);
+};
 
 // Result type for display - maps engine output to UI fields
 // Extended with all professional columns from Excel template
@@ -608,7 +617,11 @@ const ResultsTab = () => {
       }
 
       // Final validation: ensure derated installed capacity covers load (installedRatingTotal >= fullLoadCurrent)
-      const derated = (r.installedRatingTotal || r.deratedCurrent || 0);
+      // Use robust fallback: prefer engine provided installedRatingTotal, else compute from catalogRating/cableRating × deratingFactor × runs
+      const catalogBase = (r.catalogRating || r.cableRating || 0);
+      const computedInstalledPerRun = catalogBase * (r.deratingFactor || 1);
+      const computedInstalledTotal = computedInstalledPerRun * (r.numberOfRuns || 1);
+      const derated = (r.installedRatingTotal || r.deratedCurrent || computedInstalledTotal || 0);
       if (derated < (r.fullLoadCurrent || 0)) {
         r.status = 'FAILED';
         r.warnings = [...(r.warnings || []), `Insufficient derated capacity: ${derated.toFixed(2)}A < FLC ${((r.fullLoadCurrent||0)).toFixed(2)}A`];
@@ -1143,7 +1156,7 @@ const ResultsTab = () => {
                 
                 {/* DERATING FACTORS - BEFORE FLC */}
                 {deratingCount > 0 && (
-                  <th colSpan={deratingCount} className="px-2 py-2 text-center text-slate-900 font-bold bg-yellow-400 border-l border-slate-500">Derating Factors (IEC)</th>
+                  <th colSpan={deratingCount} className="px-2 py-2 text-center text-slate-900 font-bold bg-slate-700 border-l border-slate-500">Derating Factors (IEC)</th>
                 )}
 
                 {/* Section 1: FLC Sizing */}
@@ -1173,34 +1186,58 @@ const ResultsTab = () => {
               <tr className="bg-slate-650 border-b border-slate-600">
                 {/* Derating sub-headers - FIRST */}
                 {visibleColumns.deratingTotal && (
-                  <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-yellow-300 border-l border-slate-500">K_tot</th>
+                  <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-slate-600 border-l border-slate-500">
+                    K_tot
+                    <div className="text-xs text-slate-400 mt-1">{getFormulaText(10)}</div>
+                  </th>
                 )}
                 {visibleColumns.deratingAmbientTemp && (
-                  <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-yellow-300">K_t</th>
+                  <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-slate-600">
+                    K_t
+                    <div className="text-xs text-slate-400 mt-1">{getFormulaText(5)}</div>
+                  </th>
                 )}
                 {visibleColumns.deratingGrouping && (
-                  <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-yellow-300">K_g</th>
+                  <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-slate-600">
+                    K_g
+                    <div className="text-xs text-slate-400 mt-1">{getFormulaText(6)}</div>
+                  </th>
                 )}
                 {visibleColumns.deratingThermalResistivity && (
-                  <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-yellow-300">K_s</th>
+                  <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-slate-600">
+                    K_s
+                    <div className="text-xs text-slate-400 mt-1">{getFormulaText(9)}</div>
+                  </th>
                 )}
                 {visibleColumns.deratingDepth && (
-                  <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-yellow-300">K_d</th>
+                  <th className="px-2 py-1 text-center text-slate-900 text-xs font-bold bg-slate-600">
+                    K_d
+                    <div className="text-xs text-slate-400 mt-1">{getFormulaText(8)}</div>
+                  </th>
                 )}
                 
                 {/* FLC sub-headers */}
                 {visibleColumns.fullLoadCurrent && (
-                  <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">FLC(A)</th>
+                  <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">
+                    FLC(A)
+                    <div className="text-xs text-slate-400 mt-1">{getFormulaText(1)}</div>
+                  </th>
                 )}
                 {visibleColumns.deredCurrent && (
-                  <th className="px-2 py-1 text-center text-slate-300 text-xs">Derated(A)</th>
+                  <th className="px-2 py-1 text-center text-slate-300 text-xs">
+                    Derated(A)
+                    <div className="text-xs text-slate-400 mt-1">{getFormulaText(11)}</div>
+                  </th>
                 )}
                 {visibleColumns.cableSize && (
                   <th className="px-2 py-1 text-center text-slate-300 text-xs">Size(mm²)</th>
                 )}
                 
                 {/* Cable sizes sub-headers */}
-                <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">By Isc</th>
+                <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">
+                  By Isc
+                  <div className="text-xs text-slate-400 mt-1">{getFormulaText(25)}</div>
+                </th>
                 <th className="px-2 py-1 text-center text-slate-300 text-xs">By V-Drop(Run)</th>
                 <th className="px-2 py-1 text-center text-slate-300 text-xs">By V-Drop(Start)</th>
                 
@@ -1209,12 +1246,18 @@ const ResultsTab = () => {
                 <th className="px-2 py-1 text-center text-slate-300 text-xs">Runs</th>
                 
                 {/* V-drop running sub-headers */}
-                <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">ΔU(V)</th>
+                <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">
+                  ΔU(V)
+                  <div className="text-xs text-slate-400 mt-1">{getFormulaText(13)}</div>
+                </th>
                 <th className="px-2 py-1 text-center text-slate-300 text-xs">%(≤5%)</th>
                 <th className="px-2 py-1 text-center text-slate-300 text-xs">OK?</th>
                 
                 {/* V-drop starting sub-headers */}
-                <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">ΔU(V)</th>
+                <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">
+                  ΔU(V)
+                  <div className="text-xs text-slate-400 mt-1">{getFormulaText(16)}</div>
+                </th>
                 <th className="px-2 py-1 text-center text-slate-300 text-xs">%(≤15%)</th>
                 <th className="px-2 py-1 text-center text-slate-300 text-xs">OK?</th>
                 
@@ -1222,6 +1265,8 @@ const ResultsTab = () => {
                 <th className="px-2 py-1 text-center text-slate-300 text-xs border-l border-slate-500">Cable Des.</th>
                 <th className="px-2 py-1 text-center text-slate-300 text-xs">R(Ω/km)</th>
               </tr>
+
+              {/* removed full-width formula summary; per-column snippets are shown in each TH */}
             </thead>
             
             <tbody className="divide-y divide-slate-700">
@@ -1308,19 +1353,19 @@ const ResultsTab = () => {
 
                   {/* Derating Factors - FIRST */}
                   {visibleColumns.deratingTotal && (
-                    <td className="px-2 py-1 text-center font-bold bg-yellow-500/20 border-l border-slate-600">{result.deratingFactor.toFixed(3)}</td>
+                    <td className="px-2 py-1 text-center font-bold text-slate-300 border-l border-slate-600">{result.deratingFactor.toFixed(3)}</td>
                   )}
                   {visibleColumns.deratingAmbientTemp && (
-                    <td className="px-2 py-1 text-center text-sm bg-yellow-500/20">{(result.deratingComponents?.K_temp || 1).toFixed(2)}</td>
+                    <td className="px-2 py-1 text-center text-sm text-slate-300">{(result.deratingComponents?.K_temp || 1).toFixed(2)}</td>
                   )}
                   {visibleColumns.deratingGrouping && (
-                    <td className="px-2 py-1 text-center text-sm bg-yellow-500/20">{(result.deratingComponents?.K_group || 1).toFixed(2)}</td>
+                    <td className="px-2 py-1 text-center text-sm text-slate-300">{(result.deratingComponents?.K_group || 1).toFixed(2)}</td>
                   )}
                   {visibleColumns.deratingThermalResistivity && (
-                    <td className="px-2 py-1 text-center text-sm bg-yellow-500/20">{(result.deratingComponents?.K_soil || 1).toFixed(2)}</td>
+                    <td className="px-2 py-1 text-center text-sm text-slate-300">{(result.deratingComponents?.K_soil || 1).toFixed(2)}</td>
                   )}
                   {visibleColumns.deratingDepth && (
-                    <td className="px-2 py-1 text-center text-sm bg-yellow-500/20">{(result.deratingComponents?.K_depth || 1).toFixed(2)}</td>
+                    <td className="px-2 py-1 text-center text-sm text-slate-300">{(result.deratingComponents?.K_depth || 1).toFixed(2)}</td>
                   )}
 
                   {/* FLC Sizing */}
