@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Download, FileText, AlertCircle, CheckCircle, Edit2, Save, RotateCcw } from 'lucide-react';
+import { Download, FileText, AlertCircle, CheckCircle, Edit2, Save, RotateCcw, LayoutGrid } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
@@ -9,6 +9,7 @@ import CableSizingEngine_V2, { CableSizingInput as CableSizingInputV2 } from '..
 import { LoadTypeSpecs } from '../utils/CableEngineeringData';
 import { KEC_CATALOGUE } from '../utils/KEC_CableStandard';
 import { FormulaCalculator, EditableCell } from '../utils/FormulaCalculator';
+import CableSizingResultRow from './CableSizingResultRow';
 
 // Comprehensive column-to-formula ID mapping (verified from Excel template)
 // This map documents which Excel formula IDs correspond to each column in the results table.
@@ -618,6 +619,7 @@ const ResultsTab = () => {
 
   // NEW: Global edit mode - all cells become editable simultaneously
   const [globalEditMode, setGlobalEditMode] = useState(false);
+    const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
   const [editableCells, setEditableCells] = useState<Record<string, EditableCell>>({});
   const formulaCalculator = new FormulaCalculator();
 
@@ -1143,6 +1145,16 @@ const ResultsTab = () => {
               {globalEditMode ? 'Editing' : 'Edit Mode'}
             </button>
             
+              {/* View Mode Toggle */}
+              <button
+                onClick={() => setViewMode(viewMode === 'cards' ? 'table' : 'cards')}
+                className={`${viewMode === 'cards' ? 'bg-purple-600 hover:bg-purple-500' : 'bg-slate-600 hover:bg-slate-500'} text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition`}
+                title="Toggle between card view and table view"
+              >
+                <LayoutGrid size={16} />
+                {viewMode === 'cards' ? 'Card View' : 'Table View'}
+              </button>
+            
             {globalEditMode && (
               <>
                 <button
@@ -1393,9 +1405,51 @@ const ResultsTab = () => {
         </div>
       </div>
 
-      {/* Results Table - EDITABLE SPREADSHEET STYLE */}
-      <div className="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
-        <div className="overflow-x-auto overflow-y-auto results-table-scroll" style={{ height: '1200px' }}>
+        {/* RESULTS VIEW A: CARD VIEW (Detailed, Formula-Driven) - NEW */}
+        {viewMode === 'cards' && (
+          <div className="space-y-4">
+            {results.length === 0 ? (
+              <div className="bg-slate-800 rounded-lg p-8 text-center border border-slate-700">
+                <p className="text-slate-300 text-lg">No cable sizing results yet</p>
+                <p className="text-slate-400 text-sm mt-2">Load a demo file or upload Excel to generate calculations</p>
+              </div>
+            ) : (
+              <div>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+                  <div className="bg-slate-800 rounded p-3 border border-slate-600 text-center">
+                    <p className="text-2xl font-bold text-cyan-400">{results.length}</p>
+                    <p className="text-slate-400 text-xs">Total Cables</p>
+                  </div>
+                  <div className="bg-slate-800 rounded p-3 border border-slate-600 text-center">
+                    <p className="text-2xl font-bold text-green-400">{results.filter((r) => (r.voltageDrop_running_percent || 0) <= 5).length}</p>
+                    <p className="text-slate-400 text-xs">Valid (V%≤5)</p>
+                  </div>
+                  <div className="bg-slate-800 rounded p-3 border border-slate-600 text-center">
+                    <p className="text-2xl font-bold text-red-400">{results.filter((r) => (r.voltageDrop_running_percent || 0) > 5).length}</p>
+                    <p className="text-slate-400 text-xs">Invalid</p>
+                  </div>
+                  <div className="bg-slate-800 rounded p-3 border border-slate-600 text-center">
+                    <p className="text-2xl font-bold text-yellow-400">{results.reduce((sum, r) => sum + r.loadKW, 0).toFixed(0)}</p>
+                    <p className="text-slate-400 text-xs">Total Load (kW)</p>
+                  </div>
+                  <div className="bg-slate-800 rounded p-3 border border-slate-600 text-center">
+                    <p className="text-2xl font-bold text-orange-400">{(results.reduce((sum, r) => sum + r.suitableCableSize, 0) / results.length).toFixed(0)}</p>
+                    <p className="text-slate-400 text-xs">Avg Size (mm²)</p>
+                  </div>
+                </div>
+
+                {results.map((result) => (
+                  <CableSizingResultRow key={`${result.cableNumber}-${result.serialNo}`} result={result} isGlobalEditMode={globalEditMode} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* RESULTS VIEW B: TABLE VIEW (Compact, Original) */}
+      {viewMode === 'table' && (
+        <div className="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+          <div className="overflow-x-auto overflow-y-auto results-table-scroll" style={{ height: '1200px' }}>
           <table className="w-full min-w-[4000px] text-xs border-collapse">
             <thead className="bg-slate-700 sticky top-0 border-b border-slate-600">
               <tr>
@@ -1763,8 +1817,9 @@ const ResultsTab = () => {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Analysis Summary */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
